@@ -1,0 +1,10 @@
+[Desktop Entry]
+Encoding=UTF-8
+Name=YahtzeeZ
+GenericName=Yahtzee Game
+Comment=Yahtzee Game
+Icon=yahtzeez
+Exec=yahtzeez
+Terminal=false
+Type=Application
+Categories=Game;

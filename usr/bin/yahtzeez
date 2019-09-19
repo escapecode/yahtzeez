@@ -1,0 +1,708 @@
+#!/bin/bash
+
+# =============================================================================
+# YahtzeeZ v1.1
+# Copyright © SFR 2017
+# GNU GPL v3 applies (http://www.gnu.org/licenses/gpl.html)
+# Requirements: bash, gtkdialog >=0.8.3
+# =============================================================================
+
+export TEXTDOMAIN=yahtzeez
+export OUTPUT_CHARSET=UTF-8
+
+APPNAME="YahtzeeZ"
+APPVERSION="1.1"
+APPTITLE="${APPNAME} v${APPVERSION}"
+APPICON="/usr/share/pixmaps/yahtzeez.png"
+
+# -----------------------------------------------------------------------------
+
+WORKDIR="/tmp/yahtzeez.${USER}.${$}"
+mkdir -p "${WORKDIR}"
+trap 'rm -rf "${WORKDIR}"; exit' 0 INT HUP TERM
+
+# -----------------------------------------------------------------------------
+
+echo 'style "mine" {
+    bg[NORMAL]          = "#8CD5FF"
+}
+
+widget_class "*<GtkHBox>.*"         style "mine"' >  "${WORKDIR}/styles"
+
+export GTK2_RC_FILES="${WORKDIR}/styles":/root/.gtkrc-2.0:"${WORKDIR}/styles"
+
+# -----------------------------------------------------------------------------
+
+HIGHSCORE="${HOME}/.yahtzeez.hi"
+
+USE_BASH=; [ "$(readlink /bin/sh)" != bash ] && USE_BASH="bash -c "
+
+which gtkdialog4 >/dev/null 2>&1 && GTKDIALOG=gtkdialog4 || GTKDIALOG=gtkdialog
+
+echo 13 > "${WORKDIR}/counter"
+echo 3 > "${WORKDIR}/tries"
+echo 0 > "${WORKDIR}/roll"
+echo 0 > "${WORKDIR}/ybonus"
+echo 0 > "${WORKDIR}/undo"
+echo '' > "${WORKDIR}/lastmove"
+
+export WORKDIR HIGHSCORE GTKDIALOG
+
+# -----------------------------------------------------------------------------
+
+# Dice images
+
+echo '<svg width="48" height="48" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <rect x="1" y="1" rx="10" ry="10" width="46" height="46" style="fill:#FF6A6A;stroke:black;stroke-width:2;opacity:1" />
+  <circle cx="24" cy="24" r="5" stroke="black" stroke-width="1" fill="white" />
+</svg>' > "${WORKDIR}/t1.svg"
+
+echo '<svg width="48" height="48" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <rect x="1" y="1" rx="10" ry="10" width="46" height="46" style="fill:#FF6A6A;stroke:black;stroke-width:2;opacity:1" />
+  <circle cx="10" cy="10" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="38" cy="38" r="5" stroke="black" stroke-width="1" fill="white" />
+</svg>' > "${WORKDIR}/t2.svg"
+
+echo '<svg width="48" height="48" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <rect x="1" y="1" rx="10" ry="10" width="46" height="46" style="fill:#FF6A6A;stroke:black;stroke-width:2;opacity:1" />
+  <circle cx="38" cy="10" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="10" cy="38" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="24" cy="24" r="5" stroke="black" stroke-width="1" fill="white" />
+</svg>' > "${WORKDIR}/t3.svg"
+
+echo '<svg width="48" height="48" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <rect x="1" y="1" rx="10" ry="10" width="46" height="46" style="fill:#FF6A6A;stroke:black;stroke-width:2;opacity:1" />
+  <circle cx="38" cy="10" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="10" cy="38" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="10" cy="10" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="38" cy="38" r="5" stroke="black" stroke-width="1" fill="white" />
+</svg>' > "${WORKDIR}/t4.svg"
+
+echo '<svg width="48" height="48" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <rect x="1" y="1" rx="10" ry="10" width="46" height="46" style="fill:#FF6A6A;stroke:black;stroke-width:2;opacity:1" />
+  <circle cx="38" cy="10" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="10" cy="38" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="10" cy="10" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="38" cy="38" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="24" cy="24" r="5" stroke="black" stroke-width="1" fill="white" />
+</svg>' > "${WORKDIR}/t5.svg"
+
+echo '<svg width="48" height="48" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <rect x="1" y="1" rx="10" ry="10" width="46" height="46" style="fill:#FF6A6A;stroke:black;stroke-width:2;opacity:1" />
+  <circle cx="38" cy="10" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="10" cy="38" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="10" cy="10" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="38" cy="38" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="24" cy="10" r="5" stroke="black" stroke-width="1" fill="white" />
+  <circle cx="24" cy="38" r="5" stroke="black" stroke-width="1" fill="white" />
+</svg>' > "${WORKDIR}/t6.svg"
+
+# -----------------------------------------------------------------------------
+
+for i in {1..5}; do
+	ln -sfT "${WORKDIR}/t${i}.svg" "${WORKDIR}/d${i}.svg"
+done
+
+# =============================================================================
+
+func_check_end () {
+	local STATEMENTS PLAYERNAME EXIT
+
+	if [ $(cat "${WORKDIR}/counter") -eq 0 ]; then
+		oldIFS="$IFS"; IFS=$'\n'
+		for STATEMENTS in $(${GTKDIALOG} -p GUI_GAME_OVER); do
+			if [[ "$STATEMENTS" == "varPLAYERNAME="* ]]; then
+				PLAYERNAME="$(echo "$STATEMENTS" | cut -f2- -d '"' | rev | cut -f2- -d '"' | rev)"
+			else
+				eval "$STATEMENTS"
+			fi
+		done
+		IFS="$oldIFS"
+
+		if [ "${EXIT}" = "SAVE" ]; then
+			echo "${varG_TOTAL}|$(date "+%Y-%m-%d %H:%M")|${PLAYERNAME//|/}" >> "${HIGHSCORE}"
+			sort -rn "${HIGHSCORE}" -o "${HIGHSCORE}"
+		fi
+	fi
+}
+
+export -f func_check_end
+
+# -----------------------------------------------------------------------------
+
+func_show_highscore () {
+	local CNT SCORE DATE PLAYER
+
+	: > "${WORKDIR}/highscore"
+
+	CNT=1
+	grep -v '^$' "${HIGHSCORE}" 2>/dev/null | while IFS='|' read -r SCORE DATE PLAYER; do
+		echo "${CNT}|${PLAYER}|${SCORE}|${DATE}" >> "${WORKDIR}/highscore"
+		CNT=$((CNT+1))
+	done
+
+	${GTKDIALOG} -p GUI_SHOW_HIGHSCORE
+}
+
+export -f func_show_highscore
+
+# -----------------------------------------------------------------------------
+
+func_roll () {
+	local RAND STATE OLD_ROLL NEW_ROLL
+
+	OLD_ROLL="$(cat ${WORKDIR}/roll)"
+	NEW_ROLL=''
+
+	for i in {1..5}; do
+		STATE="$(eval echo varSTATE_${i})"
+		if [ "${!STATE}" = "true" ]; then
+			RAND=${OLD_ROLL:$((i-1)):1}
+		else
+			RAND=$(( (RANDOM % 6) + 1 ))
+		fi
+		NEW_ROLL="${NEW_ROLL}${RAND}"
+		ln -sfT "${WORKDIR}/t${RAND}.svg" "${WORKDIR}/d${i}.svg"
+	done
+
+	echo "${NEW_ROLL}" > "${WORKDIR}/roll"
+}
+
+export -f func_roll
+
+# -----------------------------------------------------------------------------
+
+func_calc_roll () {
+	local CATEGORY PREVIEW S ROLL COUNTER YBONUS IS_YAHTZEE UNDO LASTMOVE
+
+	oldLANG="$LANG"; LANG=C		# speed up things a little
+
+	CATEGORY="$1"
+	PREVIEW="$2"
+	COUNTER=$(cat "${WORKDIR}/counter")
+	ROLL=$(cat "${WORKDIR}/roll")
+	UNDO=$(cat "${WORKDIR}/undo")
+	LASTMOVE=$(cat "${WORKDIR}/lastmove")
+
+	# Check for Yahtzee here, because used in multiple places
+	set -- $(echo ${ROLL} | grep -o . | sort | uniq -c | sort -r)
+	[ $1 -eq 5 ] && IS_YAHTZEE=true || IS_YAHTZEE=false
+
+	# Undo
+	if [ ! "${PREVIEW}" ] && [ ${UNDO} -eq 1 ] && [ "${CATEGORY}" = "${LASTMOVE}" ]; then
+		echo 0 > "${WORKDIR}/undo"
+		echo ""
+		if [ "${IS_YAHTZEE}" = "true" ] && [ "$varS_YAHTZEE" = "50" ]; then
+			YBONUS=$(cat "${WORKDIR}/ybonus")
+			[ ${YBONUS} -ne 0 ] && echo $((YBONUS-100)) > "${WORKDIR}/ybonus"
+		fi
+		echo $((COUNTER+1)) > "${WORKDIR}/counter"
+	else
+		# Yahtzee Bonus
+		if [ ! "${PREVIEW}" ] && [ "${IS_YAHTZEE}" = "true" ] && [ "$varS_YAHTZEE" = "50" ]; then
+			YBONUS=$(cat "${WORKDIR}/ybonus")
+			echo $((YBONUS+100)) > "${WORKDIR}/ybonus"
+		fi
+
+		if [ ${ROLL} -ne 0 ]; then
+			[ ! "${PREVIEW}" ] && echo $((COUNTER-1)) > "${WORKDIR}/counter"
+
+			case "${CATEGORY}" in
+				ACES)	S=${ROLL//[^1]/}; S=$((${#S}*1))	;;
+				TWOS)	S=${ROLL//[^2]/}; S=$((${#S}*2))	;;
+				THREES)	S=${ROLL//[^3]/}; S=$((${#S}*3))	;;
+				FOURS)	S=${ROLL//[^4]/}; S=$((${#S}*4))	;;
+				FIVES)	S=${ROLL//[^5]/}; S=$((${#S}*5))	;;
+				SIXES)	S=${ROLL//[^6]/}; S=$((${#S}*6))	;;
+
+				K3)
+					set -- $(echo ${ROLL} | grep -o . | sort | uniq -c | sort -r)
+					[ $1 -ge 3 ] && S=$(( $(echo ${ROLL} | grep -o . | paste -sd+) )) || S=0
+				;;
+				K4)
+					set -- $(echo ${ROLL} | grep -o . | sort | uniq -c | sort -r)
+					[ $1 -ge 4 ] && S=$(( $(echo ${ROLL} | grep -o . | paste -sd+) )) || S=0
+				;;
+				FULL)
+					set -- $(echo ${ROLL} | grep -o . | sort | uniq -c | sort -r)
+					( ([ $1 -eq 3 ] && [ $3 -eq 2 ]) || [ $1 -eq 5 ] ) && S=25 || S=0
+				;;
+				S4)
+					set -- $(echo ${ROLL} | grep -o . | sort -u | tr -d '\n')
+					case "$1" in
+						*'1234'*|*'2345'*|*'3456'*)	S=30	;;
+						*)							S=0		;;
+					esac
+				;;
+				S5)
+					set -- $(echo ${ROLL} | grep -o . | sort -u | tr -d '\n')
+					case "$1" in
+						*'12345'*|*'23456'*)	S=40	;;
+						*)						S=0		;;
+					esac
+				;;
+				YAHTZEE)
+					[ "$IS_YAHTZEE" = true ] && S=50 || S=0
+				;;
+				CHANCE)
+					S=$(( $(echo ${ROLL} | grep -o . | paste -sd+) ))
+				;;
+			esac
+
+			echo $S
+		else
+			echo ""
+		fi
+
+
+	fi
+
+	LANG="$oldLANG"
+}
+
+export -f func_calc_roll
+
+# =============================================================================
+
+export GUI_SHOW_HIGHSCORE='
+<window title="'${APPTITLE}'" resizable="true" window-position="1" image-name="'${APPICON}'">
+  <vbox>
+    <text use-markup="true"><label>"<span font='"'serif'"' weight='"'bold'"' size='"'xx-large'"'><b>'$(gettext "Highscores")'</b></span>"</label></text>
+    <tree column-type="uint64|string|uint64|string">
+      <label>'$(gettext "Rank")'|'$(gettext "Player")'|'$(gettext "Score")'|'$(gettext "Date")'</label>
+      <width>448</width>
+      <height>256</height>
+      <input file>"'${WORKDIR}'/highscore"</input>
+    </tree>
+
+    <hbox homogeneous="true">
+      <button has-focus="true">
+        <label>'$(gettext "Close")'</label>
+        <input file stock="gtk-close"></input>
+        <action>exit:QUIT</action>
+      </button>
+    </hbox>
+  </vbox>
+</window>'
+
+# -----------------------------------------------------------------------------
+
+export GUI_GAME_OVER='
+<window title="'${APPTITLE}'" resizable="false" window-position="1" image-name="'${APPICON}'">
+  <vbox>
+    <text><label>""</label></text>
+    <text use-markup="true"><label>"<span font='"'serif'"' weight='"'bold'"' size='"'xx-large'"'><b>'$(gettext "Game Over")'</b></span>"</label></text>
+    <text><label>""</label></text>
+    <text><input>echo '$(gettext "Your score is:")' ${varG_TOTAL}</input></text>
+    <frame '$(gettext "Enter your name:")'>
+      <entry activates-default="true">
+        <variable>varPLAYERNAME</variable>
+      </entry>
+    </frame>
+    <hbox homogeneous="true">
+      <button can-default="true" has-default="true">
+        <label>'$(gettext "Save")'</label>
+        <input file stock="gtk-save"></input>
+        <action>exit:SAVE</action>
+      </button>
+    </hbox>
+  </vbox>
+</window>'
+
+# -----------------------------------------------------------------------------
+
+export GUI_ABOUT='
+<window title="'${APPTITLE}'" resizable="false" window-position="1" image-name="'${APPICON}'">
+  <vbox>
+    <frame>
+	  <text use-markup="true"><label>"<span font='"'serif'"' weight='"'bold'"' size='"'xx-large'"'><b>'${APPNAME}'</b></span>"</label></text>
+      <text><label>Version '${APPVERSION}'</label></text>
+
+      <text><label>Copyright © SFR 2017</label></text>
+      <text><label>GNU GPL v3 applies (http://www.gnu.org/licenses/gpl.html)</label></text>
+    </frame>
+
+    <hbox homogeneous="true">
+      <button has-focus="true">
+        <label>'$(gettext "Close")'</label>
+        <input file stock="gtk-close"></input>
+        <action>closewindow:GUI_ABOUT</action>
+      </button>
+    </hbox>
+
+  </vbox>
+  <variable>GUI_ABOUT</variable>
+</window>'
+
+# -----------------------------------------------------------------------------
+
+export GUI_MAIN='
+<window title="'${APPTITLE}'" resizable="false" image-name="'${APPICON}'">
+  <vbox>
+
+    <menubar>
+      <menu use-underline="true">
+
+        <menuitem use-underline="true" stock-id="gtk-new" accel-key="0x4e" accel-mods="4" label="'$(gettext "_New")'">
+          <action>echo 13 > '${WORKDIR}'/counter</action>
+          <action>echo 3 > '${WORKDIR}'/tries</action>
+          <action>echo 0 > '${WORKDIR}'/roll</action>
+          <action>echo 0 > '${WORKDIR}'/ybonus</action>
+          <action>echo 0 > '${WORKDIR}'/undo</action>
+		  <action>echo   > '${WORKDIR}'/lastmove</action>
+          <action condition="active_is_true(varDIE_1)">activate:varDIE_1</action>
+          <action condition="active_is_true(varDIE_2)">activate:varDIE_2</action>
+          <action condition="active_is_true(varDIE_3)">activate:varDIE_3</action>
+          <action condition="active_is_true(varDIE_4)">activate:varDIE_4</action>
+          <action condition="active_is_true(varDIE_5)">activate:varDIE_5</action>
+          <action>refresh:varINDEX</action>
+          <action>enable:varINDEX</action>
+          <action>disable:varDICE</action>
+          '$(for i in ACES TWOS THREES FOURS FIVES SIXES K3 K4 FULL S4 S5 YAHTZEE CHANCE; do
+          echo '
+          <action>enable:varB_'${i}'</action>
+          <action>disable:varBUT_'${i}'</action>
+          <action>refresh:varS_'${i}'</action>'
+          done)'
+          <action>refresh:varU_SCORE</action>
+          <action>refresh:varU_BONUS</action>
+          <action>refresh:varU_TOTAL</action>
+          <action>refresh:varL_SCORE</action>
+          <action>refresh:varL_BONUS</action>
+          <action>refresh:varL_TOTAL</action>
+          <action>refresh:varG_TOTAL</action>
+          <action>disable:varUNDO</action>
+        </menuitem>
+
+        <menuitem use-underline="true" stock-id="gtk-undo" accel-key="0x5a" accel-mods="4" label="'$(gettext "_Undo")'">
+          <variable>varUNDO</variable>
+          <sensitive>false</sensitive>
+          <action>echo 1 > '${WORKDIR}'/undo</action>
+		  '$(for i in ACES TWOS THREES FOURS FIVES SIXES K3 K4 FULL S4 S5 YAHTZEE CHANCE; do
+		  echo '
+		  <action condition="command_is_true( [ $(cat $WORKDIR/lastmove) = '${i}' ] && echo true)">refresh:varS_'${i}'</action>
+          <action condition="command_is_true( [ $(cat $WORKDIR/lastmove) = '${i}' ] && echo true)">enable:varB_'${i}'</action>
+		  <action>enable:varBUT_'${i}'</action>'
+		  done)'
+		  <action>refresh:varU_SCORE</action>
+		  <action>refresh:varU_BONUS</action>
+		  <action>refresh:varU_TOTAL</action>
+		  <action>refresh:varL_SCORE</action>
+		  <action>refresh:varL_BONUS</action>
+		  <action>refresh:varL_TOTAL</action>
+		  <action>refresh:varG_TOTAL</action>
+		  <action>disable:varINDEX</action>
+		  <action>disable:varUNDO</action>
+		</menuitem>
+
+        <menuitem use-underline="true" stock-id="gtk-edit" accel-key="0x48" accel-mods="4" label="'$(gettext "_Highscores")'">
+          <action>'${USE_BASH}' func_show_highscore &</action>
+        </menuitem>
+
+
+        <menuitem use-underline="true" stock-id="gtk-quit" accel-key="0xff1b" accel-mods="0" label="'$(gettext "_Quit")'">
+          <action>exit:QUIT</action>
+        </menuitem>
+        <label>'$(gettext "_Game")'</label>
+      </menu>
+
+      <menu use-underline="true">
+        <menuitem use-underline="true" stock-id="gtk-help" label="'$(gettext "_Rules (Web)")'">
+          <action>defaultbrowser https://en.wikipedia.org/wiki/Yahtzee#Rules &</action>
+        </menuitem>
+
+        <menuitem use-underline="true" stock-id="gtk-home" label="'$(gettext "_Home (Web)")'">
+          <action>defaultbrowser http://www.murga-linux.com/puppy/viewtopic.php?p=950138#950138 &</action>
+        </menuitem>
+
+        <menuitem use-underline="true" stock-id="gtk-about" label="'$(gettext "_About")'">
+          <action>launch:GUI_ABOUT</action>
+        </menuitem>
+
+        <label>'$(gettext "_Help")'</label>
+      </menu>
+
+    </menubar>
+
+    <text use-markup="true"><label>"<span font='"'serif'"' weight='"'bold'"' size='"'xx-large'"'><b>'$(gettext "Y a h t z e e Z")'</b></span>"</label></text>
+
+    <hbox>
+      <frame '$(gettext "Upper Section")'>
+        <vbox space-fill="false" space-expand="false">
+          '$(for i in "ACES|$(gettext "Aces")" "TWOS|$(gettext "Twos")" "THREES|$(gettext "Threes")" "FOURS|$(gettext "Fours")" "FIVES|$(gettext "Fives")" "SIXES|$(gettext "Sixes")"; do
+          echo '
+          <hbox>
+            <vbox sensitive="false">
+              <button width-request="128">
+                <variable>varB_'${i%%|*}'</variable>
+                <label>'${i##*|}'</label>
+                <action>refresh:varS_'${i%%|*}'</action>
+                <action>disable:varB_'${i%%|*}'</action>
+                <action>disable:varDICE</action>
+                <action>echo 3 > '${WORKDIR}'/tries</action>
+                <action>refresh:varINDEX</action>
+                <action>enable:varINDEX</action>
+	            <action>disable:varBUT_ACES</action>
+	            <action>disable:varBUT_TWOS</action>
+	            <action>disable:varBUT_THREES</action>
+	            <action>disable:varBUT_FOURS</action>
+	            <action>disable:varBUT_FIVES</action>
+	            <action>disable:varBUT_SIXES</action>
+	            <action>disable:varBUT_K3</action>
+	            <action>disable:varBUT_K4</action>
+	            <action>disable:varBUT_FULL</action>
+	            <action>disable:varBUT_S4</action>
+	            <action>disable:varBUT_S5</action>
+	            <action>disable:varBUT_YAHTZEE</action>
+                <action>disable:varBUT_CHANCE</action>
+                <action condition="active_is_true(varDIE_1)">activate:varDIE_1</action>
+                <action condition="active_is_true(varDIE_2)">activate:varDIE_2</action>
+                <action condition="active_is_true(varDIE_3)">activate:varDIE_3</action>
+                <action condition="active_is_true(varDIE_4)">activate:varDIE_4</action>
+                <action condition="active_is_true(varDIE_5)">activate:varDIE_5</action>
+                <action>refresh:varU_SCORE</action>
+                <action>refresh:varU_BONUS</action>
+                <action>refresh:varU_TOTAL</action>
+                <action>refresh:varL_BONUS</action>
+                <action>refresh:varL_TOTAL</action>
+                <action>refresh:varG_TOTAL</action>
+                <action condition="command_is_true([ $(cat '${WORKDIR}'/counter) -eq 0 ] && echo true)">disable:varINDEX</action>
+                <action>echo '${i%%|*}' > '${WORKDIR}'/lastmove</action>
+                <action condition="command_is_true([ $(cat '${WORKDIR}'/counter) -gt 0 ] && echo true)">enable:varUNDO</action>
+                <action>'${USE_BASH}' func_check_end &</action>
+
+                <action signal="enter-notify-event">refresh:varSP_'${i%%|*}'</action>
+                <action signal="enter-notify-event">hide:varS_'${i%%|*}'</action>
+                <action signal="enter-notify-event">show:varSP_'${i%%|*}'</action>
+			    <action signal="leave-notify-event">show:varS_'${i%%|*}'</action>
+                <action signal="leave-notify-event">hide:varSP_'${i%%|*}'</action>
+              </button>
+              <variable>varBUT_'${i%%|*}'</variable>
+            </vbox>
+            <text space-fill="true" space-expand="true"><label>""</label></text>
+            <entry xalign="1" width-request="48" editable="false" space-fill="false" space-expand="false">
+              <variable>varS_'${i%%|*}'</variable>
+              <default>""</default>
+              <input>'${USE_BASH}' func_calc_roll '${i%%|*}'</input>
+            </entry>
+            <entry visible="false" sensitive="false" xalign="1" width-request="48" editable="false" space-fill="false" space-expand="false">
+              <variable>varSP_'${i%%|*}'</variable>
+              <default>""</default>
+              <input>'${USE_BASH}' func_calc_roll '${i%%|*}' preview</input>
+            </entry>
+          </hbox>'
+          done)'
+        </vbox>
+
+        <vbox space-fill="true" space-expand="true"><text space-fill="true" space-expand="true"><label>""</label></text></vbox>
+
+        <vbox space-fill="false" space-expand="false">
+          <hbox>
+            <text space-fill="false" space-expand="false" xalign="2"><label>'$(gettext "Score:")'</label></text>
+            <entry xalign="1" width-request="48" editable="false" space-fill="false" space-expand="false">
+              <variable>varU_SCORE</variable>
+              <default>""</default>
+              <input>([ "$varS_ACES" ] || [ "$varS_TWOS" ] || [ "$varS_THREES" ] || [ "$varS_FOURS" ] || [ "$varS_FIVES" ] || [ "$varS_SIXES" ]) && echo $((varS_ACES+varS_TWOS+varS_THREES+varS_FOURS+varS_FIVES+varS_SIXES)) || echo</input>
+            </entry>
+          </hbox>
+
+          <hbox>
+            <text space-fill="false" space-expand="false" xalign="2"><label>'$(gettext "Bonus:")'</label></text>
+            <entry xalign="1" width-request="48" editable="false" space-fill="false" space-expand="false">
+              <variable>varU_BONUS</variable>
+              <default>""</default>
+              <input>[ "$varU_SCORE" ] && { [ $varU_SCORE -ge 63 ] && echo 35 || echo 0; } || echo</input>
+            </entry>
+          </hbox>
+
+          <hbox>
+            <text space-fill="false" space-expand="false" xalign="2"><label>'$(gettext "Total:")'</label></text>
+            <entry xalign="1" width-request="48" editable="false" space-fill="false" space-expand="false">
+              <variable>varU_TOTAL</variable>
+              <default>""</default>
+              <input>[ "$varU_SCORE" ] && echo $((varU_SCORE+varU_BONUS)) || echo</input>
+            </entry>
+          </hbox>
+        </vbox>
+      </frame>
+
+      <frame '$(gettext "Lower Section")'>
+        <vbox space-fill="false" space-expand="false">
+          '$(for i in  "S4|$(gettext "Sequence of 4")" "S5|$(gettext "Sequence of 5")" "FULL|$(gettext "Full House")" "K3|$(gettext "3 of a kind")" "K4|$(gettext "4 of a kind")" "YAHTZEE|$(gettext "Yahtzee")" "CHANCE|$(gettext "Chance")"; do
+          echo '
+          <hbox>
+            <vbox sensitive="false">
+              <button width-request="128">
+                <variable>varB_'${i%%|*}'</variable>
+                <label>'${i##*|}'</label>
+                <action>refresh:varS_'${i%%|*}'</action>
+                <action>disable:varB_'${i%%|*}'</action>
+                <action>disable:varDICE</action>
+                <action>echo 3 > '${WORKDIR}'/tries</action>
+                <action>refresh:varINDEX</action>
+                <action>enable:varINDEX</action>
+	            <action>disable:varBUT_ACES</action>
+	            <action>disable:varBUT_TWOS</action>
+	            <action>disable:varBUT_THREES</action>
+	            <action>disable:varBUT_FOURS</action>
+	            <action>disable:varBUT_FIVES</action>
+	            <action>disable:varBUT_SIXES</action>
+	            <action>disable:varBUT_K3</action>
+	            <action>disable:varBUT_K4</action>
+	            <action>disable:varBUT_FULL</action>
+	            <action>disable:varBUT_S4</action>
+	            <action>disable:varBUT_S5</action>
+	            <action>disable:varBUT_YAHTZEE</action>
+                <action>disable:varBUT_CHANCE</action>
+                <action condition="active_is_true(varDIE_1)">activate:varDIE_1</action>
+                <action condition="active_is_true(varDIE_2)">activate:varDIE_2</action>
+                <action condition="active_is_true(varDIE_3)">activate:varDIE_3</action>
+                <action condition="active_is_true(varDIE_4)">activate:varDIE_4</action>
+                <action condition="active_is_true(varDIE_5)">activate:varDIE_5</action>
+                <action>refresh:varL_SCORE</action>
+                <action>refresh:varL_BONUS</action>
+                <action>refresh:varL_TOTAL</action>
+                <action>refresh:varG_TOTAL</action>
+                <action condition="command_is_true([ $(cat '${WORKDIR}'/counter) -eq 0 ] && echo true)">disable:varINDEX</action>
+                <action>echo '${i%%|*}' > '${WORKDIR}'/lastmove</action>
+                <action condition="command_is_true([ $(cat '${WORKDIR}'/counter) -gt 0 ] && echo true)">enable:varUNDO</action>
+                <action>'${USE_BASH}' func_check_end &</action>
+
+                <action signal="enter-notify-event">refresh:varSP_'${i%%|*}'</action>
+                <action signal="enter-notify-event">hide:varS_'${i%%|*}'</action>
+                <action signal="enter-notify-event">show:varSP_'${i%%|*}'</action>
+			    <action signal="leave-notify-event">show:varS_'${i%%|*}'</action>
+                <action signal="leave-notify-event">hide:varSP_'${i%%|*}'</action>
+              </button>
+              <variable>varBUT_'${i%%|*}'</variable>
+            </vbox>
+            <text space-fill="true" space-expand="true"><label>""</label></text>
+            <entry xalign="1" width-request="48" editable="false" space-fill="false" space-expand="false">
+              <variable>varS_'${i%%|*}'</variable>
+              <default>""</default>
+              <input>'${USE_BASH}' func_calc_roll '${i%%|*}'</input>
+            </entry>
+            <entry visible="false" sensitive="false" xalign="1" width-request="48" editable="false" space-fill="false" space-expand="false">
+              <variable>varSP_'${i%%|*}'</variable>
+              <default>""</default>
+              <input>'${USE_BASH}' func_calc_roll '${i%%|*}' preview</input>
+            </entry>
+          </hbox>'
+          done)'
+        </vbox>
+
+        <vbox space-fill="true" space-expand="true"><text space-fill="true" space-expand="true"><label>""</label></text></vbox>
+
+        <vbox space-fill="false" space-expand="false">
+          <hbox>
+            <text space-fill="false" space-expand="false" xalign="2"><label>'$(gettext "Score:")'</label></text>
+            <entry xalign="1" width-request="48" editable="false" space-fill="false" space-expand="false">
+              <variable>varL_SCORE</variable>
+              <default>""</default>
+              <input>([ "$varS_K3" ] || [ "$varS_K4" ] || [ "$varS_FULL" ] || [ "$varS_S4" ] || [ "$varS_S5" ] || [ "$varS_YAHTZEE" ] || [ "$varS_CHANCE" ]) && echo $((varS_K3+varS_K4+varS_FULL+varS_S4+varS_S5+varS_YAHTZEE+varS_CHANCE)) || echo</input>
+            </entry>
+          </hbox>
+
+          <hbox>
+            <text space-fill="false" space-expand="false" xalign="2"><label>'$(gettext "Bonus:")'</label></text>
+            <entry xalign="1" width-request="48" editable="false" space-fill="false" space-expand="false">
+              <variable>varL_BONUS</variable>
+              <default>""</default>
+              <input>[ "$varL_SCORE" ] && cat '${WORKDIR}'/ybonus || echo</input>
+            </entry>
+          </hbox>
+
+          <hbox>
+            <text space-fill="false" space-expand="false" xalign="2"><label>'$(gettext "Total:")'</label></text>
+            <entry xalign="1" width-request="48" editable="false" space-fill="false" space-expand="false">
+              <variable>varL_TOTAL</variable>
+              <default>""</default>
+              <input>[ "$varL_SCORE" ] && echo $((varL_SCORE+varL_BONUS)) || echo</input>
+            </entry>
+          </hbox>
+        </vbox>
+
+      </frame>
+    </hbox>
+
+    <hbox homogeneous="true"><hbox>
+    <text use-markup="true"><label>"<span><b>'$(gettext "Grand total:")'</b></span>"</label></text>
+      <entry xalign="1" width-request="48" editable="false" space-fill="false" space-expand="false">
+        <variable>varG_TOTAL</variable>
+        <default>""</default>
+        <input>([ "$varU_TOTAL" ] || [ "$varL_TOTAL" ]) && echo $((varU_TOTAL+varL_TOTAL)) || echo</input>
+      </entry>
+    </hbox></hbox>
+
+    <hseparator></hseparator>
+
+
+    <hbox space-fill="false" space-expand="false">
+      <hbox space-fill="false" space-expand="false" sensitive="false">
+        '$(for i in {1..5}; do
+        echo '
+        <vbox>
+          <togglebutton relief="2">
+            <variable>varDIE_'${i}'</variable>
+            <input file>'${WORKDIR}'/d'${i}'.svg</input>
+            <action>if true activate:varSTATE_'${i}'</action>
+            <action>if false activate:varSTATE_'${i}'</action>
+	      </togglebutton>
+	      <checkbox visible="false">
+	        <variable>varSTATE_'${i}'</variable>
+	        <label>""</label>
+	      </checkbox>
+	    </vbox>'
+	    done)'
+	    <variable>varDICE</variable>
+	  </hbox>
+
+	  <text space-fill="true" space-expand="true"><label>""</label></text>
+
+	  <notebook page="3" show-tabs="false" show-border="false">
+	    '$(for i in {0..3}; do
+	    echo '
+	    <button width-request="64" space-fill="true" space-expand="true" has-focus="true">
+	      <variable>varROLL_'${i}'</variable>
+	      <label>'$(gettext "Roll!")' ('${i}')</label>
+	      <action>'${USE_BASH}' func_roll</action>
+          <action>refresh:varDIE_1</action>
+          <action>refresh:varDIE_2</action>
+          <action>refresh:varDIE_3</action>
+          <action>refresh:varDIE_4</action>
+          <action>refresh:varDIE_5</action>
+	      <action>enable:varDICE</action>
+	      <action>enable:varBUT_ACES</action>
+	      <action>enable:varBUT_TWOS</action>
+	      <action>enable:varBUT_THREES</action>
+	      <action>enable:varBUT_FOURS</action>
+	      <action>enable:varBUT_FIVES</action>
+	      <action>enable:varBUT_SIXES</action>
+	      <action>enable:varBUT_K3</action>
+	      <action>enable:varBUT_K4</action>
+	      <action>enable:varBUT_FULL</action>
+	      <action>enable:varBUT_S4</action>
+	      <action>enable:varBUT_S5</action>
+	      <action>enable:varBUT_YAHTZEE</action>
+          <action>enable:varBUT_CHANCE</action>
+	      <action>echo '$((i-1))' > '${WORKDIR}'/tries</action>
+	      <action>refresh:varINDEX</action>
+	      <action condition="command_is_true([ $varINDEX -eq 0 ] && echo true)">disable:varINDEX</action>
+	      <action>disable:varUNDO</action>
+	    </button>'
+	    done)'
+
+	    <variable>varINDEX</variable>
+	    <input>cat '${WORKDIR}'/tries</input>
+	  </notebook>
+
+    </hbox>
+
+  </vbox>
+</window>'
+
+# =============================================================================
+
+${GTKDIALOG} -p GUI_MAIN
+
+exit
